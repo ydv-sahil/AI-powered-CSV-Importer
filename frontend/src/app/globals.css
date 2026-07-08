@@ -1,0 +1,193 @@
+@import 'tailwindcss';
+
+/*
+ * Tailwind v4 reads design tokens straight out of `@theme`, so `bg-surface`,
+ * `text-muted`, `border-line` all work without a tailwind.config.js.
+ *
+ * Dark mode is class-based (`.dark` on <html>), driven by the ThemeToggle and
+ * seeded from `prefers-color-scheme` before first paint.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-brand-50: #fff4ed;
+  --color-brand-100: #ffe6d4;
+  --color-brand-200: #ffc8a8;
+  --color-brand-300: #ffa171;
+  --color-brand-400: #ff7038;
+  --color-brand-500: #fe5000;
+  --color-brand-600: #ef3708;
+  --color-brand-700: #c62509;
+  --color-brand-800: #9d1f10;
+  --color-brand-900: #7e1d10;
+
+  --color-accent-500: #10b981;
+  --color-accent-600: #059669;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', Menlo, monospace;
+
+  --radius-card: 0.875rem;
+}
+
+/* Semantic surface tokens. One definition per theme; components never hardcode a hex. */
+:root {
+  --bg-page: #f7f8fa;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f3f4f6;
+  --bg-inset: #fafbfc;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #9ca3af;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.04), 0 1px 3px rgb(16 24 40 / 0.06);
+  --shadow-lift: 0 8px 24px -6px rgb(16 24 40 / 0.12), 0 2px 6px -2px rgb(16 24 40 / 0.06);
+}
+
+.dark {
+  --bg-page: #0b0d12;
+  --bg-surface: #12151c;
+  --bg-subtle: #1a1e27;
+  --bg-inset: #0f1218;
+  --text-primary: #f3f4f6;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --line: #242936;
+  --line-strong: #333a4a;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
+  --shadow-lift: 0 8px 24px -6px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.3);
+}
+
+@theme inline {
+  --color-page: var(--bg-page);
+  --color-surface: var(--bg-surface);
+  --color-subtle: var(--bg-subtle);
+  --color-inset: var(--bg-inset);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+}
+
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--bg-page);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible focus for keyboard users, invisible for mouse users. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background-color: var(--color-brand-200);
+    color: var(--color-brand-900);
+  }
+
+  .dark ::selection {
+    background-color: var(--color-brand-800);
+    color: var(--color-brand-50);
+  }
+}
+
+@layer utilities {
+  /* Slim scrollbars for the data tables, which scroll in both axes. */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--line-strong);
+    border-radius: 9999px;
+    border: 2px solid var(--bg-surface);
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-muted);
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Sticky table headers need an opaque background or rows show through. */
+  .sticky-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background-color: var(--bg-subtle);
+  }
+
+  .animate-in {
+    animation: fade-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .shimmer {
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(255 255 255 / 0.35) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-in,
+    .shimmer {
+      animation: none;
+    }
+  }
+}

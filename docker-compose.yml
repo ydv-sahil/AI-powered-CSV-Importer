@@ -1,0 +1,41 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - '4000:4000'
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      CORS_ORIGIN: http://localhost:3000
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?Set GEMINI_API_KEY in a .env file next to docker-compose.yml}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      BATCH_SIZE: ${BATCH_SIZE:-25}
+      BATCH_CONCURRENCY: ${BATCH_CONCURRENCY:-3}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the browser bundle at build time. From the browser's point of
+        # view the backend is on the host, not on the compose network — so this is
+        # `localhost`, not `http://backend:4000`.
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:4000
+    ports:
+      - '3000:3000'
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

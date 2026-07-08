@@ -1,0 +1,24 @@
+node_modules/
+dist/
+.next/
+out/
+build/
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+*.log
+npm-debug.log*
+coverage/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build artifacts
+*.tsbuildinfo
+
+# Local tooling — hardcodes machine-specific paths
+.claude/
