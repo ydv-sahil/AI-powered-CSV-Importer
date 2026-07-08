@@ -4,6 +4,7 @@ import type { NextFunction, Request, Response } from 'express';
 import multer from 'multer';
 import { ZodError } from 'zod';
 import { env } from '../config/env.js';
+import { LlmAuthError } from '../utils/async.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -64,7 +65,13 @@ export function errorHandler(
   });
 }
 
-function classify(error: unknown): {
+/**
+ * The single place an error becomes a status, a code, and a safe message.
+ *
+ * Exported because the SSE endpoint cannot use this middleware — its headers are
+ * long since sent — and must report the same codes for the same failures.
+ */
+export function classify(error: unknown): {
   status: number;
   code: string;
   message: string;
@@ -72,6 +79,12 @@ function classify(error: unknown): {
 } {
   if (error instanceof ApiError) {
     return { status: error.status, code: error.code, message: error.message, details: error.details };
+  }
+
+  // 502, not 500: the upstream provider refused us. The server is fine; its
+  // configuration is not. The message is already sanitized at the provider.
+  if (error instanceof LlmAuthError) {
+    return { status: 502, code: 'LLM_AUTH_ERROR', message: error.message };
   }
 
   if (error instanceof ZodError) {

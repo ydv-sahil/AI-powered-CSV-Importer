@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/Button';
 
 /** Turns an error code into something a human can act on. */
 const REMEDY: Record<string, string> = {
+  LLM_AUTH_ERROR:
+    'The server is running but its AI key was rejected. Set a valid GEMINI_API_KEY in the backend environment — get one free at aistudio.google.com/apikey.',
   NETWORK_ERROR:
     'The backend did not respond. Check that it is running and that NEXT_PUBLIC_API_BASE_URL points at it.',
   FILE_TOO_LARGE: 'Split the file into smaller chunks and import them one at a time.',

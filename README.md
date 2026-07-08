@@ -43,7 +43,15 @@ A model that hallucinates `crm_status: "HOT"`, returns three emails in one cell,
 
 Every input row ends in exactly one of `records` or `skipped`, with a reason. Rows are matched to model output by an echoed `__row` index, **never by array position** — so a model that returns 24 records for a 25-row batch loses one row instead of silently shifting every subsequent record onto the wrong lead.
 
-A batch that exhausts its retries doesn't vanish either: its rows are reported as skipped, with the error attached.
+A batch that exhausts its retries doesn't vanish either: its rows are reported as skipped, with the error attached. But if *every* batch fails, the API returns `502 AI_EXTRACTION_FAILED` rather than a `200` with an empty array — a rate limit is not a successful import of zero leads.
+
+### Don't ask the model to do arithmetic
+
+Converting `45790` (an Excel serial) or `1747145048` (a Unix timestamp) into a calendar date is a deterministic transform. `dates.ts` does it exactly, every time, for free.
+
+Gemini, asked to do it, returns `""`. So the prompt tells the model to **copy such values through unchanged**, and `recoverCreatedAt` parses them server-side. The model still wins when it succeeds; the fallback only ever fills a hole.
+
+This is the general principle: **use the LLM for judgement, not for computation.**
 
 ---
 
@@ -145,6 +153,18 @@ curl -F "file=@samples/realestate-crm-messy.csv" http://localhost:4000/api/impor
 }
 ```
 
+**Errors** are one shape everywhere: `{ "error": { "code", "message" } }`. The frontend switches on `code`, the human reads `message`.
+
+| Code | Status | Meaning |
+|---|---|---|
+| `UNSUPPORTED_FILE_TYPE` | 415 | Not a `.csv` |
+| `FILE_TOO_LARGE` / `TOO_MANY_ROWS` | 413 | Over the configured limit |
+| `MALFORMED_CSV` / `NO_DATA_ROWS` | 400 | The file is unusable |
+| `LLM_AUTH_ERROR` | 502 | The provider rejected the API key — a deploy misconfiguration, not a bad file |
+| `AI_EXTRACTION_FAILED` | 502 | Every batch failed. Not reported as a successful import of zero rows |
+
+The same `classify()` function produces these for both the JSON and the SSE endpoint, so a given failure can't report two different codes.
+
 ### Why SSE, not WebSockets
 
 The channel is one-way. SSE is plain HTTP, so it survives every proxy and PaaS ingress untouched, and there's no connection lifecycle to manage.
@@ -184,9 +204,11 @@ Swapping Gemini for OpenAI or Claude is **one new file** implementing `LlmProvid
 ### Things that took the most thought
 
 - **`utils/json.ts`** — models truncate mid-object at the token ceiling. Rather than lose a whole batch, we walk the string (respecting escapes and string literals), find the last complete element, and close the brackets. A 25-row batch that got cut off at row 22 yields 22 rows, not zero.
-- **Bounded concurrency + full-jitter backoff** — three batches in flight, capped for the Gemini free tier's 15 req/min. Without jitter, N parallel batches hit a 429 together and retry together, forever.
-- **`FatalError` vs `RetryableError`** — a bad API key is retried zero times. A 429 is retried three.
+- **Thinking budgets.** Gemini 2.5 spends output tokens *reasoning* before it writes a character of JSON. Mapping gets a 1024-token budget — deciding whether `Reach` is an email or a phone number is exactly what reasoning is for. Extraction gets `thinkingBudget: 0`, because copying values into keys is not. Left unbounded on a capped output budget, a thinking model returns an **empty candidate** and you retry forever without ever learning why.
+- **Honouring `RetryInfo`.** Gemini's 429 body tells you how long to wait. Backing off a jittered ≤8s against a *per-minute* token quota means every attempt lands inside the same exhausted window. We parse `retryDelay` and obey it — capped, so a hostile `Retry-After: 3600` can't park the request open.
+- **`FatalError` vs `RetryableError`** — a bad API key is retried zero times. A 429 is retried three, at the provider's own pace.
 - **Date ambiguity** — `05/06/2026` is read day-first (5 June), matching Indian CRM exports. `06/29/2026` flips automatically, because 29 cannot be a month. `31-02-2026` is rejected rather than silently rolled to 3 March, which is what `new Date()` does.
+- **`crm_note` is exempt from the one-column-per-field rule.** It is the designated catch-all; contesting it would throw away two of every three note columns.
 - **Virtualized table inside a real `<table>`** — two spacer rows instead of absolutely-positioned divs, so `<thead>` sticky positioning and screen-reader table semantics both survive. A 5,000-row import mounts ~20 rows.
 
 ---
@@ -197,14 +219,25 @@ Swapping Gemini for OpenAI or Claude is **one new file** implementing `LlmProvid
 cd backend && npm test
 ```
 
-55 unit tests over the parts where correctness is decidable:
+84 unit tests over the parts where correctness is decidable:
 
-- **`normalize.test.ts`** — the skip rule, first-email-wins, synonym clamping, newline escaping, null tolerance, hallucinated-key rejection
-- **`dates.test.ts`** — every format, plus the property that output always satisfies `new Date(x)`
-- **`csv.service.test.ts`** — BOM, quoted commas, embedded newlines, duplicate headers, ragged rows
-- **`json.test.ts`** — markdown fences, prose preambles, braces inside strings, truncated responses
+- **`normalize.test.ts`** (22) — the skip rule, first-email-wins, synonym clamping, newline escaping, null tolerance, hallucinated-key rejection
+- **`prompts.test.ts`** (16) — every CRM field / status / source is actually named in the prompt, `__row` protocol is stated, newlines survive serialization, rows serialize to valid JSON
+- **`csv.service.test.ts`** (14) — BOM, quoted commas, embedded newlines, duplicate headers, ragged rows
+- **`async.test.ts`** (13) — retry counts, `FatalError` short-circuit, provider `retryDelay` honoured over backoff (fake timers), concurrency ceiling never exceeded, input order preserved
+- **`dates.test.ts`** (11) — every format, plus the property that output always satisfies `new Date(x)`
+- **`json.test.ts`** (8) — markdown fences, prose preambles, braces inside strings, truncated responses
 
 `config/env.ts` validates at import time, so `vitest.config.ts` sets `LLM_PROVIDER=mock` — the tests never need a key or a network.
+
+### Bugs these actually caught
+
+Written before the code was ever executed, then run. In order:
+
+1. A stray backtick inside a template literal silently terminated `CRM_RULES`. Caught by `tsc` — and notably **not** by `vitest`, whose esbuild transform parsed it differently. Twice.
+2. `clean()` collapsed `\s+ → ' '`, destroying newlines *before* `escapeForCsvCell` could escape them. Rule 6 was unsatisfiable by construction. Caught by a unit test.
+3. The same bug in `truncateValue`, but worse — it flattened newlines **in the prompt itself**, so the model never saw a line break and could never escape one. Caught by driving a real CSV through the real endpoint.
+4. SSE emitted `parsed` and then went silent. `req.on('close')` fires when multer finishes draining the request body, not when the client disconnects — so `clientGone` flipped `true` on the first `await`. It's `res.on('close')`. Caught only by reading the actual event stream.
 
 ---
 
@@ -240,13 +273,15 @@ All backend config is validated at boot ([`config/env.ts`](backend/src/config/en
 |---|---|---|
 | `LLM_PROVIDER` | `gemini` | `gemini` \| `mock` |
 | `GEMINI_API_KEY` | — | Required unless `mock` |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | **Not `gemini-2.0-flash`** — see below |
 | `BATCH_SIZE` | `25` | Rows per LLM call |
-| `BATCH_CONCURRENCY` | `3` | Tuned for the free tier's rate limit |
+| `BATCH_CONCURRENCY` | `2` | Tuned for the free tier's *tokens-per-minute* cap |
 | `MAX_RETRIES` | `3` | Attempts per batch, including the first |
 | `MAX_FILE_SIZE_BYTES` | `5242880` | 5 MB |
 | `MAX_ROWS` | `5000` | |
 | `CORS_ORIGIN` | `*` | Comma-separated list in production |
+
+> **`gemini-2.0-flash` is a trap.** It still appears in `models.list` and authenticates fine, but has **zero free-tier quota** on keys issued from late 2025 onward — every `generateContent` returns `429 RESOURCE_EXHAUSTED`. Use `gemini-2.5-flash`, or `gemini-2.5-flash-lite` for a higher free-tier rate limit.
 
 ---
 
@@ -268,5 +303,7 @@ Plus: server-sent progress events, per-column mapping confidence, CSV export of 
 
 - **Stateless.** No database — a refresh loses the result. Deliberate: the brief says a DB is optional, and adding one buys nothing for a single-shot import.
 - **5,000 rows / 5 MB.** Both are `env` vars. Beyond that you'd want a job queue and a polling endpoint, not a longer HTTP request.
-- **Gemini free tier is 15 requests/minute.** A 5,000-row file is 200 batches ≈ 14 minutes wall-clock at the default concurrency. Raise `BATCH_CONCURRENCY` on a paid key.
+- **The Gemini free tier caps input *tokens* per minute, not just requests.** A wide CSV exhausts it faster than a long one. The backoff honours the provider's own `retryDelay`, so imports recover rather than fail — but a large file on a free key will be slow. Raise `BATCH_CONCURRENCY` on a paid key.
 - **`possession_time` is passed through as written** (`Dec 2027`, `Ready to move`) rather than normalized to a date, because "ready to move" isn't one.
+- **`crm_status` is inferred from remarks when no status column exists.** `"Cold — do not pursue"` becomes `BAD_LEAD`. That is inference, not extraction; the original text always survives in `crm_note` so it can be audited.
+- **No integration test against a live model.** The suite runs offline against the mock provider. Real-model behaviour was verified by hand against all three sample files; a recorded-fixture test would be the next thing to add.

@@ -5,6 +5,7 @@ import { parseCsv } from '../services/csv.service.js';
 import { extractCrmRecords, type ProgressEvent } from '../services/extraction.service.js';
 import { toCsv } from '../services/export.service.js';
 import { requireFile } from '../middleware/upload.js';
+import { classify } from '../middleware/errors.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -74,16 +75,13 @@ export async function importCsvStream(req: Request, res: Response): Promise<void
     const csv = parseCsv(file.buffer);
     await extractCrmRecords(csv, send);
   } catch (error) {
-    const isApiError =
-      typeof error === 'object' && error !== null && 'code' in error && 'status' in error;
-
-    send({
-      type: 'error',
-      code: isApiError ? String((error as { code: unknown }).code) : 'INTERNAL_ERROR',
-      message: error instanceof Error ? error.message : 'Import failed.',
-    });
+    // Headers went out with the 200 long ago, so the error middleware can't run.
+    // Reuse its classifier so a given failure reports the same code either way.
+    const { code, message } = classify(error);
+    send({ type: 'error', code, message });
 
     logger.error('Streamed import failed', {
+      code,
       error: error instanceof Error ? error.message : String(error),
     });
   } finally {

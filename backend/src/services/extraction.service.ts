@@ -11,6 +11,7 @@ import {
   type SkippedRecord,
 } from '../domain/crm.js';
 import { normalizeRecord } from '../domain/normalize.js';
+import { normalizeDate } from '../domain/dates.js';
 import { getLlmProvider } from './llm/index.js';
 import {
   EXTRACTION_SYSTEM_PROMPT,
@@ -20,6 +21,7 @@ import {
 } from './llm/prompts.js';
 import { chunk, sampleRows, type CsvRow, type ParsedCsv } from './csv.service.js';
 import { FatalError, mapWithConcurrency, withRetry } from '../utils/async.js';
+import { ApiError } from '../middleware/errors.js';
 import { parseLlmJson } from '../utils/json.js';
 import { logger } from '../utils/logger.js';
 
@@ -56,6 +58,9 @@ export type ProgressEvent =
 export type ProgressCallback = (event: ProgressEvent) => void;
 
 const noop: ProgressCallback = () => {};
+
+/** Reasoning tokens allowed for the field-mapping call. Enough to weigh a column, not to ruminate. */
+const MAPPING_THINKING_BUDGET = 1024;
 
 // ---------------------------------------------------------------------------
 // LLM response schemas.
@@ -100,6 +105,10 @@ export async function inferFieldMapping(csv: ParsedCsv): Promise<FieldMapping> {
           systemPrompt: MAPPING_SYSTEM_PROMPT,
           userPrompt: buildMappingPrompt(csv.headers, samples),
           temperature: 0,
+          // The one call in this pipeline that is genuinely a reasoning problem:
+          // deciding whether a column named "Reach" is an email or a phone number.
+          // Worth the thinking tokens — it happens once per file, not once per batch.
+          thinkingBudget: MAPPING_THINKING_BUDGET,
         }),
       { attempts: env.MAX_RETRIES, label: 'field-mapping' },
     );
@@ -124,6 +133,8 @@ export async function inferFieldMapping(csv: ParsedCsv): Promise<FieldMapping> {
  * - Entries naming a field that isn't a CRM field are dropped.
  * - When two columns claim the same CRM field, the higher-confidence one wins and
  *   the loser becomes unmapped — its data survives in `crm_note`.
+ * - `crm_note` is exempt: it is the designated catch-all, and several source
+ *   columns legitimately belong there at once.
  * - Any header the model never mentioned is unmapped.
  */
 function reconcileMapping(
@@ -148,6 +159,13 @@ function reconcileMapping(
     };
 
     if (entry.crmField === null) {
+      entries.push(entry);
+      continue;
+    }
+
+    // The catch-all is not a scarce resource. Remarks, budget, and loan-status
+    // columns can all be notes; contesting them would throw two of the three away.
+    if (entry.crmField === 'crm_note') {
       entries.push(entry);
       continue;
     }
@@ -209,6 +227,31 @@ interface BatchOutcome {
   failed: boolean;
 }
 
+/**
+ * Recover a date the model gave up on.
+ *
+ * Converting `45790` (an Excel serial) or `1747145048` (a Unix timestamp) into a
+ * calendar date is a deterministic transform — `dates.ts` does it exactly, every
+ * time, for free. Asking a language model to do arithmetic and trusting the answer
+ * is strictly worse. So when the model returns a blank `created_at` but the source
+ * row *has* a value in the column it mapped to `created_at`, parse it ourselves.
+ *
+ * The model still wins when it succeeds: this only ever fills a hole.
+ */
+function recoverCreatedAt(record: CrmRecord, row: CsvRow, mapping: FieldMapping): CrmRecord {
+  if (record.created_at) return record;
+
+  const column = mapping.entries.find((e) => e.crmField === 'created_at')?.sourceColumn;
+  const rawValue = column ? row[column] : undefined;
+  if (!rawValue) return record;
+
+  const recovered = normalizeDate(rawValue);
+  if (!recovered) return record;
+
+  logger.debug('Recovered a created_at the model left blank', { column, rawValue, recovered });
+  return { ...record, created_at: recovered };
+}
+
 async function extractBatch(
   batch: IndexedRow[],
   batchNumber: number,
@@ -235,6 +278,10 @@ async function extractBatch(
             mapping,
           ),
           temperature: 0,
+          // Extraction is mechanical: copy values into the right keys, given a
+          // mapping that already resolved the hard question. Reasoning tokens here
+          // buy nothing and can starve the JSON of its output budget.
+          thinkingBudget: 0,
         });
       },
       { attempts: env.MAX_RETRIES, label: `batch-${batchNumber}` },
@@ -262,7 +309,7 @@ async function extractBatch(
 
       const outcome = normalizeRecord(raw);
       if (outcome.ok) {
-        byIndex.set(index, outcome.record);
+        byIndex.set(index, recoverCreatedAt(outcome.record, row, mapping));
       } else {
         skipped.push({ rowNumber: index + 1, reason: outcome.reason, raw: row });
       }
@@ -362,6 +409,23 @@ export async function extractCrmRecords(
       imported: records.length,
       skipped: skipped.length,
     });
+  }
+
+  /*
+   * A partial failure is a successful import with some rows skipped — that's the
+   * contract, and it's why nothing disappears.
+   *
+   * A *total* failure is not. Returning 200 with an empty `records` array and a
+   * "0 imported" summary reports a rate limit or a dead API key as though the
+   * user's file were the problem. Fail loudly instead.
+   */
+  if (failedBatches === batches.length && records.length === 0) {
+    const reason = skipped[0]?.reason ?? 'Every AI batch failed.';
+    throw new ApiError(
+      502,
+      'AI_EXTRACTION_FAILED',
+      `The AI could not process any rows. ${reason}`,
+    );
   }
 
   const result: ImportResult = {

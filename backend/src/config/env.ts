@@ -20,7 +20,9 @@ const EnvSchema = z.object({
   LLM_PROVIDER: z.enum(['gemini', 'openai', 'anthropic', 'mock']).default('gemini'),
 
   GEMINI_API_KEY: z.string().optional(),
-  GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
+  // gemini-2.0-flash has no free-tier quota on keys issued from late 2025 onward;
+  // it answers `models.list` but 429s every generateContent call. 2.5-flash does.
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
@@ -30,8 +32,12 @@ const EnvSchema = z.object({
 
   /** Rows sent to the model per request. Smaller = more parallelism, more tokens. */
   BATCH_SIZE: intFromString(25),
-  /** Batches in flight at once. Bounded to stay inside free-tier rate limits. */
-  BATCH_CONCURRENCY: intFromString(3),
+  /**
+   * Batches in flight at once. Bounded to stay inside free-tier rate limits —
+   * the Gemini free tier caps *input tokens per minute*, and three concurrent
+   * batches of 25 rows will blow through it on a moderately wide CSV.
+   */
+  BATCH_CONCURRENCY: intFromString(2),
   /** Attempts per batch, including the first. */
   MAX_RETRIES: intFromString(3),
   /** Per-request timeout against the LLM. */

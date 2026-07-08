@@ -10,9 +10,9 @@ services:
       CORS_ORIGIN: http://localhost:3000
       LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
       GEMINI_API_KEY: ${GEMINI_API_KEY:?Set GEMINI_API_KEY in a .env file next to docker-compose.yml}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       BATCH_SIZE: ${BATCH_SIZE:-25}
-      BATCH_CONCURRENCY: ${BATCH_CONCURRENCY:-3}
+      BATCH_CONCURRENCY: ${BATCH_CONCURRENCY:-2}
     healthcheck:
       test:
         - CMD

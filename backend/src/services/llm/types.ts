@@ -14,6 +14,12 @@ export interface LlmCompletionRequest {
   /** 0 for extraction work. We want determinism, not creativity. */
   temperature?: number;
   maxOutputTokens?: number;
+  /**
+   * Reasoning-token allowance for models that think before answering
+   * (Gemini 2.5+). `0` disables thinking; omit to let the model decide.
+   * Providers without a thinking mode ignore this.
+   */
+  thinkingBudget?: number;
   signal?: AbortSignal;
 }
 

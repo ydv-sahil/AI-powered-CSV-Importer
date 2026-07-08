@@ -56,6 +56,10 @@ HARD CONSTRAINTS — these are not suggestions:
 3. created_at MUST be "YYYY-MM-DD HH:mm:ss" (24-hour, no timezone suffix).
    Treat ambiguous numeric dates as DAY-first: "05/06/2026" is 5 June 2026.
    If no time is present, use 00:00:00. If no date is present, use "".
+   A bare 5-digit number ("45790") is an Excel serial date. A 10-digit one
+   ("1747145048") is a Unix timestamp. If you cannot convert such a value with
+   confidence, COPY IT THROUGH UNCHANGED rather than blanking it — it will be
+   converted downstream. Never guess a date.
 
 4. email — if the source has several, keep the FIRST one and append the
    others to crm_note as: "Additional emails: b@x.com, c@y.com"
@@ -141,10 +145,17 @@ Rules for your answer:
 - Map AT MOST ONE source column to each CRM field. If two columns compete
   (e.g. "Email" and "Secondary Email"), map the primary one and leave the other
   unmapped — it will be folded into crm_note.
+- crm_note is the ONE exception: any number of columns may map to it. It is the
+  catch-all for remarks, budgets, loan status, and anything else worth keeping.
 - Set crmField to null for any column you cannot confidently place.
 - An ID column, a row number, or an internal reference maps to null.
 - Prefer null over a low-confidence guess. Unmapped data is preserved in crm_note;
   a wrong mapping silently corrupts a field.
+- A column whose values are of MIXED kinds (some emails, some phone numbers)
+  cannot be mapped to a single field. Set it to null and say so in your reason —
+  the per-row extraction step will place each value individually.
+- A column holding TWO facts per cell ("Kochi, Kerala") maps to the field of its
+  FIRST fact (city). The extraction step will split out the rest.
 
 Respond with JSON only. No prose, no markdown fence.
 `.trim();

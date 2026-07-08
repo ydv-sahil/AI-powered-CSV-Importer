@@ -3,12 +3,42 @@ import { logger } from './logger.js';
 /** Retry, backoff, and bounded concurrency. No dependency, no framework. */
 
 export class RetryableError extends Error {
-  override readonly name = 'RetryableError';
+  override readonly name: string = 'RetryableError';
+
+  /**
+   * How long the provider asked us to wait, if it said.
+   *
+   * Gemini's 429 body carries a `RetryInfo` detail with the exact delay. Ignoring
+   * it and backing off a jittered 500ms–8s against a *per-minute* token quota
+   * means every attempt lands inside the same exhausted window and the batch is
+   * lost. Obeying it lets the request simply succeed a moment later.
+   */
+  constructor(
+    message: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+  }
 }
 
-/** Signals that retrying is pointless — a 400, a bad API key, a malformed request. */
+/**
+ * Signals that retrying is pointless — a 400, a bad API key, a malformed request.
+ *
+ * `name` is typed as `string` rather than the literal, so subclasses can narrow it.
+ */
 export class FatalError extends Error {
-  override readonly name = 'FatalError';
+  override readonly name: string = 'FatalError';
+}
+
+/**
+ * The provider rejected our credentials.
+ *
+ * Distinct from a generic `FatalError` because it is neither the server's fault
+ * nor the user's file's fault — it is a deployment misconfiguration, and it
+ * deserves a message that says so instead of a stack trace or a bare 500.
+ */
+export class LlmAuthError extends FatalError {
+  override readonly name = 'LlmAuthError';
 }
 
 export function sleep(ms: number): Promise<void> {
@@ -20,6 +50,8 @@ export interface RetryOptions {
   /** Base delay; doubles each attempt. */
   baseDelayMs?: number;
   maxDelayMs?: number;
+  /** Ceiling for a provider-requested delay. Guards against a hostile `Retry-After: 3600`. */
+  maxRetryAfterMs?: number;
   label?: string;
 }
 
@@ -34,7 +66,13 @@ export interface RetryOptions {
  */
 export async function withRetry<T>(
   task: (attempt: number) => Promise<T>,
-  { attempts, baseDelayMs = 500, maxDelayMs = 8_000, label = 'task' }: RetryOptions,
+  {
+    attempts,
+    baseDelayMs = 500,
+    maxDelayMs = 8_000,
+    maxRetryAfterMs = 65_000,
+    label = 'task',
+  }: RetryOptions,
 ): Promise<T> {
   let lastError: unknown;
 
@@ -47,13 +85,21 @@ export async function withRetry<T>(
       if (error instanceof FatalError) throw error;
       if (attempt === attempts) break;
 
+      // The provider knows better than our exponential curve does. Believe it,
+      // but never let it park the request open indefinitely.
+      const requested =
+        error instanceof RetryableError && error.retryAfterMs !== undefined
+          ? Math.min(error.retryAfterMs, maxRetryAfterMs)
+          : undefined;
+
       const ceiling = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
-      const delay = Math.round(Math.random() * ceiling);
+      const delay = requested ?? Math.round(Math.random() * ceiling);
 
       logger.warn(`${label} failed, retrying`, {
         attempt,
         of: attempts,
         delayMs: delay,
+        honoringProviderDelay: requested !== undefined,
         error: error instanceof Error ? error.message : String(error),
       });
 
